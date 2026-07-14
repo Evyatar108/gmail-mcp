@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -14,6 +15,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import getaddresses
 from html import escape
+from pathlib import Path
 from typing import Any, Iterable
 
 from gmail_mcp.config import (
@@ -24,6 +26,7 @@ from gmail_mcp.config import (
     FILTER_CONFIRMATION_TTL_SECONDS,
     GMAIL_SETTINGS_BASIC_SCOPE,
     MAX_ATTACHMENTS,
+    MAX_ATTACHMENT_DOWNLOAD_BYTES,
     MAX_BODY_CHARS,
     MAX_DRAFT_BODY_CHARS,
     MAX_FILTER_ADDRESS_CHARS,
@@ -38,7 +41,11 @@ from gmail_mcp.config import (
 )
 from gmail_mcp.errors import AuthenticationRequiredError, GmailApiError
 from gmail_mcp.gmail_client import GmailClientFactory
-from gmail_mcp.message_parser import headers_from_payload, normalize_message
+from gmail_mcp.message_parser import (
+    find_attachment_part,
+    headers_from_payload,
+    normalize_message,
+)
 
 
 METADATA_HEADERS = ["From", "To", "Cc", "Bcc", "Subject", "Date", "Message-ID", "References"]
@@ -49,6 +56,15 @@ LABEL_LIST_VISIBILITIES = {"labelShow", "labelShowIfUnread", "labelHide"}
 MESSAGE_LIST_VISIBILITIES = {"show", "hide"}
 FILTER_SIZE_COMPARISONS = {"smaller", "larger"}
 MAX_LABEL_NAME_CHARS = 225
+MAX_ATTACHMENT_FILENAME_CHARS = 240
+WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
 
 
 @dataclass(frozen=True)
@@ -378,6 +394,125 @@ class GmailOperations:
             "message_id": message["id"],
             "attachments": message["attachments"],
             "attachments_truncated": message["attachments_truncated"],
+        }
+
+    def download_attachment(
+        self,
+        message_id: str,
+        part_id: str,
+        destination_directory: str,
+        max_bytes: int = MAX_ATTACHMENT_DOWNLOAD_BYTES,
+    ) -> dict[str, Any]:
+        normalized_message_id = _id(message_id)
+        max_bytes = _bounded(
+            max_bytes,
+            1,
+            MAX_ATTACHMENT_DOWNLOAD_BYTES,
+            "max_bytes",
+        )
+        destination = _resolved_destination_directory(destination_directory)
+
+        service = self.factory.get_service()
+        message = self.factory.execute(
+            service.users().messages().get(
+                userId="me",
+                id=normalized_message_id,
+                format="full",
+            )
+        )
+        attachment = find_attachment_part(message.get("payload") or {}, part_id)
+        if attachment is None:
+            raise ValueError("MIME part ID was not found in this message.")
+        attachment_id = attachment.get("attachment_id")
+        if not isinstance(attachment_id, str) or not attachment_id:
+            raise ValueError(
+                "The selected MIME part is inline/data-only and has no downloadable "
+                "Gmail attachment ID."
+            )
+
+        advertised_size = int(attachment.get("size", 0))
+        if advertised_size > max_bytes:
+            raise ValueError(
+                f"Attachment metadata size {advertised_size} exceeds max_bytes {max_bytes}."
+            )
+
+        filename = _safe_attachment_filename(
+            str(attachment.get("filename") or ""),
+            f"{normalized_message_id}:{part_id}",
+        )
+        target = (destination / filename).resolve(strict=False)
+        if target.parent != destination:
+            raise ValueError("Attachment filename resolves outside destination_directory.")
+        if target.exists():
+            raise ValueError(f"Destination file already exists: {target}")
+
+        response = self.factory.execute(
+            service.users().messages().attachments().get(
+                userId="me",
+                messageId=normalized_message_id,
+                id=attachment_id,
+            )
+        )
+        encoded = response.get("data")
+        if not isinstance(encoded, str):
+            raise ValueError("Gmail attachment response did not contain base64url data.")
+        compact_encoded = "".join(encoded.split())
+        max_encoded_chars = 4 * ((max_bytes + 2) // 3)
+        if len(compact_encoded) > max_encoded_chars:
+            raise ValueError(
+                f"Encoded attachment data cannot fit within max_bytes {max_bytes}."
+            )
+        if len(compact_encoded) % 4 == 1:
+            raise ValueError("Gmail attachment response contained malformed base64url data.")
+        padded = compact_encoded + ("=" * (-len(compact_encoded) % 4))
+        try:
+            content = base64.b64decode(
+                padded.encode("ascii"),
+                altchars=b"-_",
+                validate=True,
+            )
+        except (binascii.Error, UnicodeEncodeError) as exc:
+            raise ValueError(
+                "Gmail attachment response contained malformed base64url data."
+            ) from exc
+        if len(content) > max_bytes:
+            raise ValueError(
+                f"Decoded attachment size {len(content)} exceeds max_bytes {max_bytes}."
+            )
+
+        try:
+            with _open_new_attachment_file(target) as output:
+                try:
+                    created_path = _opened_file_path(output)
+                    if created_path != target:
+                        raise OSError("Destination changed during file creation.")
+                    written = output.write(content)
+                    if written != len(content):
+                        raise OSError(
+                            f"Short write: wrote {written} of {len(content)} bytes."
+                        )
+                except OSError:
+                    try:
+                        _mark_open_file_for_deletion(output)
+                    except OSError as cleanup_exc:
+                        raise OSError(
+                            "Attachment write failed and handle cleanup also failed."
+                        ) from cleanup_exc
+                    raise
+        except FileExistsError as exc:
+            raise ValueError(f"Destination file already exists: {target}") from exc
+        except OSError as exc:
+            raise ValueError(f"Unable to write attachment to {target}: {exc}") from exc
+
+        return {
+            "message_id": normalized_message_id,
+            "part_id": part_id,
+            "attachment_id": attachment_id,
+            "filename": filename,
+            "mime_type": attachment.get("mime_type"),
+            "content_disposition": attachment.get("content_disposition"),
+            "size": len(content),
+            "path": str(target),
         }
 
     def modify_labels(
@@ -863,6 +998,181 @@ def _bounded(value: int, minimum: int, maximum: int, name: str) -> int:
     if value < minimum or value > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}.")
     return value
+
+
+def _resolved_destination_directory(value: str) -> Path:
+    requested = Path(value).expanduser()
+    if not requested.is_absolute():
+        raise ValueError("destination_directory must be an absolute path.")
+    try:
+        resolved = requested.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"destination_directory does not exist: {requested}") from exc
+    if not resolved.is_dir():
+        raise ValueError(f"destination_directory is not a directory: {resolved}")
+    return resolved
+
+
+def _safe_attachment_filename(filename: str, fallback_key: str) -> str:
+    normalized = unicodedata.normalize("NFKC", filename)
+    basename = normalized.replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join(
+        "_"
+        if character in '<>:"/\\|?*' or unicodedata.category(character).startswith("C")
+        else character
+        for character in basename
+    ).strip()
+    cleaned = cleaned.rstrip(" .")
+    if not cleaned:
+        digest = hashlib.sha256(fallback_key.encode("utf-8")).hexdigest()[:12]
+        cleaned = f"attachment-{digest}"
+
+    reserved_stem = cleaned.split(".", 1)[0].upper()
+    if reserved_stem in WINDOWS_RESERVED_FILENAMES:
+        cleaned = f"_{cleaned}"
+
+    if _utf16_code_units(cleaned) > MAX_ATTACHMENT_FILENAME_CHARS:
+        original_suffix = Path(cleaned).suffix
+        suffix = _truncate_utf16(original_suffix, 20)
+        stem_source = (
+            cleaned[: -len(original_suffix)] if original_suffix else cleaned
+        )
+        stem_limit = MAX_ATTACHMENT_FILENAME_CHARS - _utf16_code_units(suffix)
+        stem = _truncate_utf16(stem_source, stem_limit).rstrip(" .")
+        cleaned = f"{stem}{suffix}"
+    return cleaned
+
+
+def _utf16_code_units(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _truncate_utf16(value: str, max_units: int) -> str:
+    units = 0
+    characters: list[str] = []
+    for character in value:
+        character_units = _utf16_code_units(character)
+        if units + character_units > max_units:
+            break
+        characters.append(character)
+        units += character_units
+    return "".join(characters)
+
+
+def _opened_file_path(output: Any) -> Path:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    get_final_path = ctypes.WinDLL(
+        "kernel32",
+        use_last_error=True,
+    ).GetFinalPathNameByHandleW
+    get_final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    get_final_path.restype = wintypes.DWORD
+
+    handle = msvcrt.get_osfhandle(output.fileno())
+    required = get_final_path(handle, None, 0, 0)
+    if required == 0:
+        error = ctypes.get_last_error()
+        raise OSError(error, "Unable to resolve opened attachment path.")
+    buffer = ctypes.create_unicode_buffer(required + 1)
+    written = get_final_path(handle, buffer, len(buffer), 0)
+    if written == 0 or written >= len(buffer):
+        error = ctypes.get_last_error()
+        raise OSError(error, "Unable to resolve opened attachment path.")
+
+    value = buffer.value
+    if value.startswith("\\\\?\\UNC\\"):
+        value = f"\\\\{value[8:]}"
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value).resolve(strict=True)
+
+
+def _open_new_attachment_file(path: Path) -> Any:
+    import ctypes
+    import msvcrt
+    import os
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+
+    generic_write = 0x40000000
+    delete_access = 0x00010000
+    create_new = 1
+    file_attribute_normal = 0x00000080
+    handle = create_file(
+        str(path),
+        generic_write | delete_access,
+        0,
+        None,
+        create_new,
+        file_attribute_normal,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error in {80, 183}:
+            raise FileExistsError(error, "Destination file already exists.", str(path))
+        raise OSError(error, "Unable to create attachment file.", str(path))
+
+    try:
+        descriptor = msvcrt.open_osfhandle(
+            handle,
+            os.O_BINARY | os.O_WRONLY,
+        )
+    except OSError:
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, "wb", buffering=0)
+
+
+def _mark_open_file_for_deletion(output: Any) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("delete_file", wintypes.BOOL)]
+
+    set_file_information = ctypes.WinDLL(
+        "kernel32",
+        use_last_error=True,
+    ).SetFileInformationByHandle
+    set_file_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_file_information.restype = wintypes.BOOL
+
+    handle = msvcrt.get_osfhandle(output.fileno())
+    disposition = FileDispositionInfo(True)
+    if not set_file_information(
+        handle,
+        4,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        error = ctypes.get_last_error()
+        raise OSError(error, "Unable to mark partial attachment for deletion.")
 
 
 def _label_name(value: str) -> str:

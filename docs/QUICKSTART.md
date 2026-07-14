@@ -17,7 +17,7 @@ Set-Location gmail-mcp
 ```
 
 The setup script creates `.venv`, installs locked dependencies, and registers
-the exact 15-tool allowlist with Copilot CLI. It also installs the public
+the exact 16-tool allowlist with Copilot CLI. It also installs the public
 `gmail-mcp`, `gmail-mcp-setup`, and `gmail-inbox-organizer` skills.
 
 ## Configure Google OAuth

@@ -86,7 +86,8 @@ may remain valid briefly at Google.
 | OAuth client JSON | Yes | No |
 | Refresh token | Yes, WinVault | No |
 | Access token | No | No |
-| Email content | No application persistence | No |
+| Email content | No application persistence unless an operator explicitly downloads one attachment | No |
+| Downloaded attachment | Yes, in the operator-selected existing directory | No |
 | Copilot MCP path/tool allowlist | Yes, user config | No |
 
 ## Scope and API behavior

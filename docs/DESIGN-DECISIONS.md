@@ -34,8 +34,9 @@ Google OAuth client, stores credentials in a local JSON file, defaults to
 direct send, attachment download, filters, and more mutations.
 
 The custom server keeps a smaller curated tool surface, WinVault refresh-token
-storage, no attachment content, draft-first sending, state-bound confirmations,
-message-only Trash, and protected label/filter checks.
+storage, no attachment bytes in MCP output, bounded explicit local downloads,
+draft-first sending, state-bound confirmations, message-only Trash, and
+protected label/filter checks.
 
 ## Custom server instead of Google's remote Gmail MCP
 
@@ -82,11 +83,19 @@ draft/message IDs, recipients, subject, and raw content. Trash fingerprints bind
 the sorted message identities and preview metadata. The state is fetched again
 when executing.
 
-## No attachment content
+## Explicit bounded attachment downloads
 
-Attachment download increases filesystem risk, data exfiltration surface,
-context volume, and file-type handling complexity. The initial design exposes
-metadata only.
+Attachment bytes are never returned through MCP because binary content would
+increase hosted-model exposure and context volume. An explicit download tool may
+instead save one exact message attachment into an existing absolute local
+directory.
+
+The tool selects the stable MIME part ID against a fresh full-message tree, then
+uses Gmail's current transient attachment ID internally. It caps decoded content
+at 25 MiB, sanitizes the untrusted Gmail filename, refuses overwrite and
+directory creation, and writes with exclusive creation. MIME parts without a
+Gmail `attachmentId` remain metadata-only. Saved files are untrusted persistent
+local data and remain outside the source repository.
 
 ## Full-mailbox search default
 

@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from gmail_mcp.config import MAX_ATTACHMENT_DOWNLOAD_BYTES
 from gmail_mcp.errors import GmailMcpError
 from gmail_mcp.operations import GmailOperations
 
@@ -173,6 +174,23 @@ async def gmail_list_attachments(
 ) -> dict[str, Any]:
     """List attachment metadata without downloading attachment content."""
     return await _call("list_attachments", message_id, max_items)
+
+
+@mcp.tool(annotations=MUTATING, structured_output=True)
+async def gmail_download_attachment(
+    message_id: str,
+    part_id: str,
+    destination_directory: str,
+    max_bytes: int = MAX_ATTACHMENT_DOWNLOAD_BYTES,
+) -> dict[str, Any]:
+    """Download one selected attachment to an existing local directory."""
+    return await _call(
+        "download_attachment",
+        message_id,
+        part_id,
+        destination_directory,
+        max_bytes,
+    )
 
 
 @mcp.tool(annotations=MUTATING, structured_output=True)

@@ -42,7 +42,8 @@ starts it as a user-configured stdio process.
 - Write tools are marked as mutating/destructive for Copilot confirmations.
   Keep confirmations enabled and do not use `/allow-all` with this server.
 - Persistent filters cannot forward mail or automate Trash/Spam actions.
-- Attachment content download is not supported; only metadata is exposed.
+- Attachment download is explicit, bounded to 25 MiB, writes only to an existing
+  absolute local directory, and never overwrites a file.
 
 ## Google Cloud setup
 
@@ -65,7 +66,7 @@ Authorization opens the system browser, requests offline access, verifies the
 authenticated account and granted scopes, and stores the refresh token in
 Windows Credential Manager.
 
-`setup-copilot.ps1` registers the exact 15-tool allowlist using the cloned
+`setup-copilot.ps1` registers the exact 16-tool allowlist using the cloned
 repository's absolute executable path and installs the three public safety/setup
 skills.
 
@@ -77,12 +78,14 @@ never launches a browser.
 
 1. Search: `Use gmail_search to find receipts from last month.`
 2. Read: `Use gmail_get_message for message ID ...`
-3. Draft: `Create a draft reply, but do not send it.`
-4. Send: call `gmail_send_draft` without confirmation to receive the exact
+3. Download: select attachment metadata, then save that exact attachment to an
+   existing absolute directory with `gmail_download_attachment`.
+4. Draft: `Create a draft reply, but do not send it.`
+5. Send: call `gmail_send_draft` without confirmation to receive the exact
    preview token, review it, then call again with that token.
-5. Trash: call `gmail_trash` without confirmation to receive the exact preview
+6. Trash: call `gmail_trash` without confirmation to receive the exact preview
    token, review the listed message IDs, then call again with that token.
-6. Rules: create a label, preview a safe filter, then approve the native
+7. Rules: create a label, preview a safe filter, then approve the native
    destructive-tool prompt before filter creation or deletion.
 
 Gmail Trash retention is time-limited. `gmail_untrash` works only while Gmail

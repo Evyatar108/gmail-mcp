@@ -33,6 +33,7 @@ def test_expected_tools_are_registered() -> None:
         "gmail_create_filter",
         "gmail_delete_filter",
         "gmail_list_attachments",
+        "gmail_download_attachment",
         "gmail_modify_labels",
         "gmail_archive",
         "gmail_create_draft",
@@ -42,5 +43,7 @@ def test_expected_tools_are_registered() -> None:
     }
 
     by_name = {tool.name: tool for tool in tools}
+    assert by_name["gmail_download_attachment"].annotations.destructiveHint is False
+    assert by_name["gmail_download_attachment"].annotations.readOnlyHint is False
     assert by_name["gmail_create_filter"].annotations.destructiveHint is True
     assert by_name["gmail_delete_filter"].annotations.destructiveHint is True

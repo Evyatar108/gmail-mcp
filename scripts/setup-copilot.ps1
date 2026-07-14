@@ -44,6 +44,7 @@ try {
         "gmail_create_filter",
         "gmail_delete_filter",
         "gmail_list_attachments",
+        "gmail_download_attachment",
         "gmail_modify_labels",
         "gmail_archive",
         "gmail_create_draft",

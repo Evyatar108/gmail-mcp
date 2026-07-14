@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added bounded exact-MIME-part attachment downloads to existing local
+  directories with filename sanitization, strict base64url validation, and
+  no-overwrite writes.
 - Added Windows CI, private vulnerability reporting guidance, and automatic
   installation of public Gmail skills during setup.
 - Sanitized package metadata and paths for public sharing.

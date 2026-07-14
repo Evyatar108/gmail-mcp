@@ -31,7 +31,7 @@ sender addresses and personal routing choices.
 | Refresh token | Windows Credential Manager service `gmail-mcp`, record `gmail-oauth` | WinVault only; backend fails closed |
 | Access token | Process memory | Recreated through refresh; not persisted |
 | MCP registration | `~/.copilot/mcp-config.json` | Contains executable path and tool allowlist only |
-| Gmail content | Google and transient MCP/Copilot context | Bounded responses; no application logging |
+| Gmail content | Google, transient MCP/Copilot context, and explicit operator-selected attachment paths | Bounded responses; no application logging; no implicit attachment persistence |
 
 ## Authorization
 
@@ -101,11 +101,27 @@ these tools.
 Existing filters with forwarding or actions outside the safe subset can be
 listed in redacted form but cannot be deleted through MCP.
 
+### Attachment downloads
+
+`gmail_download_attachment` writes one exact attachment to an absolute existing
+directory selected by the operator. It resolves the selected stable MIME part
+against a fresh message, uses Gmail's current transient attachment ID internally,
+caps decoded content at 25 MiB, sanitizes the Gmail filename, resolves the final
+parent directory, and uses exclusive creation. Existing files are never
+overwritten and directories are never created.
+
+Attachment bytes are not returned through MCP, but the saved file is persistent,
+untrusted local data. The server does not open or execute it. Operators must keep
+sensitive downloads outside source repositories and apply appropriate local file
+permissions and retention.
+
 ## Data minimization
 
 - Search returns metadata and snippets, not full message bodies.
 - Message and thread bodies are capped.
-- Attachment tools return metadata only; attachment content is never downloaded.
+- Attachment discovery returns metadata only. Content is downloaded only through
+  an explicit exact-part call and is written locally rather than returned
+  through MCP.
 - Errors do not include message bodies.
 - Application logs must not include headers, bodies, tokens, OAuth secrets, or
   attachment contents.
@@ -128,6 +144,8 @@ the sender and purpose without reproducing the secret.
 ## Residual risks
 
 - Copilot can receive selected Gmail content.
+- Explicitly downloaded attachments persist in the operator-selected directory
+  until the operator removes them.
 - Tool annotations and confirmation tokens cannot replace an attentive operator.
 - Persistent filters act on future mail and can hide matching messages if
   approved carelessly.

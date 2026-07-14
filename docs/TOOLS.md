@@ -26,6 +26,26 @@ label:inbox is:unread
 Search returns snippets, which can contain sensitive text. Retrieve full message
 bodies only when needed.
 
+## Local file creation
+
+| Tool | Inputs | Effect | Limits |
+| --- | --- | --- | --- |
+| `gmail_download_attachment` | `message_id`, exact MIME `part_id`, absolute existing `destination_directory`, optional `max_bytes` | Saves one selected attachment locally and returns metadata/path only | No overwrite or directory creation; 1 byte-25 MiB; MIME parts without `attachmentId` are unsupported |
+
+Use the `part_id` returned by `gmail_list_attachments`; Gmail attachment IDs are
+transient and can change between metadata reads. The server resolves the selected
+part against a fresh full message and uses its current attachment ID internally.
+Gmail filenames are untrusted and are normalized into one safe Windows filename;
+path components, control characters, reserved device names, and trailing
+dots/spaces are removed or replaced. A name collision fails rather than
+overwriting or auto-renaming. The destination may be a resolved junction/symlink,
+but the final file must stay inside that resolved directory.
+
+Attachment bytes travel directly from Gmail to the local server process and are
+not returned in MCP output. The saved file is still untrusted and may contain
+sensitive data; do not open, execute, publish, or commit it without a separate
+operator request.
+
 ## Reversible mutation tools
 
 | Tool | Inputs | Effect | Limit |
@@ -122,7 +142,7 @@ rollback with `untrash`.
 | Category | Tools | Annotation intent |
 | --- | --- | --- |
 | Read-only | Search, get message/thread, labels, filters, attachment metadata | `readOnlyHint=true` |
-| Mutating | Create/apply labels, archive, draft creation, untrash | `readOnlyHint=false`, `destructiveHint=false` |
+| Mutating | Attachment download, create/apply labels, archive, draft creation, untrash | `readOnlyHint=false`, `destructiveHint=false` |
 | High impact | Create/delete filter, send draft, Trash | `destructiveHint=true` |
 
 Annotations inform the client but are not an authorization boundary. Keep

@@ -119,6 +119,39 @@ def list_attachments(payload: dict[str, Any], max_items: int) -> tuple[list[dict
     return attachments, len(attachments) >= max_items
 
 
+def find_attachment_part(
+    payload: dict[str, Any],
+    part_id: str,
+) -> dict[str, Any] | None:
+    match: dict[str, Any] | None = None
+
+    def visit(part: dict[str, Any]) -> None:
+        nonlocal match
+        if match is not None:
+            return
+        if str(part.get("partId", "")) == part_id:
+            body = part.get("body") or {}
+            disposition = None
+            for header in part.get("headers", []):
+                if str(header.get("name", "")).lower() == "content-disposition":
+                    disposition = decode_header_value(str(header.get("value", "")))
+                    break
+            match = {
+                "part_id": part.get("partId"),
+                "attachment_id": body.get("attachmentId"),
+                "filename": decode_header_value(str(part.get("filename", ""))),
+                "mime_type": part.get("mimeType"),
+                "content_disposition": disposition,
+                "size": int(body.get("size", 0)),
+            }
+            return
+        for child in part.get("parts", []):
+            visit(child)
+
+    visit(payload)
+    return match
+
+
 def normalize_message(
     message: dict[str, Any],
     max_body_chars: int,
